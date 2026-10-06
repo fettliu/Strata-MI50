@@ -12,6 +12,8 @@ endif()
 set(_strata_hip_validated gfx1100 gfx1201)
 set(_strata_hip_community gfx1101 gfx1200)
 set(_strata_hip_unvalidated gfx1102 gfx1030)
+set(_strata_hip_fork gfx906)   # fork extension: CDNA1/Vega has no wave32 execution mode; kernels run 32-lane logical
+                               # warps on wave64 code objects (explicit shuffle widths, ballot half words — intrinsics.hpp)
 # CMake hands HIP a ';' list, but a -DCMAKE_HIP_ARCHITECTURES typed by hand (or ROCm's own Windows tooling) may use
 # spaces, which foreach(IN LISTS) would otherwise treat as one element.
 string(REPLACE " " ";" _strata_hip_norm "${CMAKE_HIP_ARCHITECTURES}")
@@ -26,6 +28,8 @@ foreach(_arch IN LISTS _strata_hip_norm)
     message(STATUS "Strata HIP: ${_base} was validated by community reports (docs/AMD_HIP.md)")
   elseif(_base IN_LIST _strata_hip_unvalidated)
     message(WARNING "Strata HIP: ${_base} builds, but it is not validated on a real card yet; please report results")
+  elseif(_base IN_LIST _strata_hip_fork)
+    message(WARNING "Strata HIP: ${_base} is a fork extension (upstream excludes wave64 cards): wave64 code objects with 32-lane virtual warps")
   else()
     message(FATAL_ERROR
       "Strata HIP supports wave32 gfx1100, gfx1101, gfx1200 and gfx1201 (unvalidated: ${_strata_hip_unvalidated}); "

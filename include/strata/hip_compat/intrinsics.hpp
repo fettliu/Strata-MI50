@@ -25,6 +25,10 @@ __device__ __forceinline__ int dp4a(int a, int b, int c) {
     // RDNA2 has no sudot4 (that is gfx11+), but it has the plain signed v_dot4_i32_i8 (dot1-insts): the same
     // signed x signed byte products accumulated modulo 2^32, no clamp.
     return __builtin_amdgcn_sdot4(a, b, c, false);
+#elif (defined(__gfx906__) || defined(__gfx908__) || defined(__gfx90a__)) && __has_builtin(__builtin_amdgcn_sdot4)
+    // Vega / CDNA1 (gfx906 Mi50 family): same v_dot4_i32_i8 as RDNA2, per the GCN5/CDNA ISA; the wave32 code
+    // object path uses it like the gfx1030 branch above.
+    return __builtin_amdgcn_sdot4(a, b, c, false);
 #else
     const uint32_t ua = static_cast<uint32_t>(a);
     const uint32_t ub = static_cast<uint32_t>(b);
@@ -108,9 +112,45 @@ __device__ __forceinline__ T shfl_sync(uint32_t mask, T value, int source_lane, 
     return __shfl(value, source_lane, width);
 }
 
+// CUDA's __syncwarp. HIP does not declare it on ROCm 6.3; __syncthreads is the whole block's barrier. The kernel
+// sites are audited block-convergent: every virtual warp reaches a barrier the same number of times independent
+// of its data (guarded `if (lane == 0)` regions are mask-programmed on GCN, so the instruction stream stays
+// uniform across the block), which makes the coarser block barrier safe. A partial mask would break that
+// convergence, so reject it like the shuffles do.
+__device__ __forceinline__ void syncwarp(uint32_t mask = 0xffffffffu) {
+    require_full_wave_mask(mask);
+    __syncthreads();
+}
+
+// CUDA's __match_any_sync: the mask of virtual-warp lanes holding this lane's value. HIP does not declare it on
+// ROCm 6.3 (the hardware v_permblane helper is gfx10+; GCN5 has none), so gather it with width-32 shuffles,
+// which already keep the two halves of a wave64 CTA separate.
+template <typename T>
+__device__ __forceinline__ unsigned match_any_sync(uint32_t mask, T value) {
+    require_full_wave_mask(mask);
+    const int lane = (int) (threadIdx.x & 31);
+    unsigned same = 1u << lane;
+#pragma unroll
+    for (int other = 0; other < 32; ++other)
+        if (other != lane && shfl_sync(0xffffffffu, value, other) == value) same |= 1u << other;
+    return same;
+}
+
+// CUDA's __ballot_sync. On wave64 code objects (the gfx906 fork) __ballot fills all 64 hardware lanes: a
+// physical wave carries both logical 32-lane warps of the kernels' threadIdx alignment, so keep the half
+// holding this thread's group. On wave32 targets the low half is always the full word. The width comes from
+// clang's per-target macro (probed on gfx906: __AMDGCN_WAVEFRONT_SIZE__=64 there, 32 on RDNA); a plain host
+// TU that only force-includes this shim has no such macro and keeps the 32-bit form (it never runs here).
 __device__ __forceinline__ unsigned ballot_sync(uint32_t mask, int predicate) {
     require_full_wave_mask(mask);
-    return static_cast<unsigned>(__ballot(predicate));
+    const unsigned long long ballot64 = __ballot(predicate);
+#if defined(__AMDGCN_WAVEFRONT_SIZE__)
+    const int wave = __AMDGCN_WAVEFRONT_SIZE__;
+    const int flat = static_cast<int>(threadIdx.x + blockDim.x * (threadIdx.y + blockDim.y * threadIdx.z));
+    return (flat & (wave - 1)) < 32 ? static_cast<unsigned>(ballot64) : static_cast<unsigned>(ballot64 >> 32);
+#else
+    return static_cast<unsigned>(ballot64);
+#endif
 }
 
 }  // namespace strata::hip_compat
@@ -125,6 +165,8 @@ __device__ __forceinline__ unsigned ballot_sync(uint32_t mask, int predicate) {
 #define __shfl_up_sync(...) (::strata::hip_compat::shfl_up_sync(__VA_ARGS__))
 #define __shfl_sync(...) (::strata::hip_compat::shfl_sync(__VA_ARGS__))
 #define __ballot_sync(mask, predicate) (::strata::hip_compat::ballot_sync((mask), (predicate)))
+#define __syncwarp(...) (::strata::hip_compat::syncwarp(__VA_ARGS__))
+#define __match_any_sync(mask, value) (::strata::hip_compat::match_any_sync((mask), (value)))
 // AMD's sleep instruction accepts only 0..15; the synchronization loops use it as a
 // backoff hint, so use its smallest portable delay independently of CUDA cycle counts.
 #define __nanosleep(cycles) __builtin_amdgcn_s_sleep(1)

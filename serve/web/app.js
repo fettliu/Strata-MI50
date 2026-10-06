@@ -136,13 +136,33 @@ $("metrics").innerHTML = METRICS.map((m) => `
 
 function spark(id, values, max) {
   const svg = $(id);
-  const v = (values || []).map((x) => (x == null ? 0 : x));
-  if (v.length < 2) { svg.querySelector(".line").setAttribute("d", ""); svg.querySelector(".area").setAttribute("d", ""); return; }
-  const top = Math.max(max || 0, ...v, 1e-9);
-  const pts = v.map((x, i) => [(i / (v.length - 1)) * 100, 30 - (x / top) * 26]);
-  const line = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(2)},${p[1].toFixed(2)}`).join("");
-  svg.querySelector(".line").setAttribute("d", line);
-  svg.querySelector(".area").setAttribute("d", `${line}L100,32L0,32Z`);
+  const lineEl = svg.querySelector(".line"), areaEl = svg.querySelector(".area");
+  const clear = () => { lineEl.setAttribute("d", ""); areaEl.setAttribute("d", ""); };
+  const vals = values || [];
+  // a null means the backend cannot measure this at all (an AMD PCIe rate, say) - draw a gap, not a fabricated 0 line
+  const seen = [];
+  vals.forEach((x, i) => { if (x != null) seen.push([i, x]); });
+  if (seen.length < 2) { clear(); return; }
+  const n = vals.length, top = Math.max(max || 0, ...seen.map((p) => p[1]), 1e-9);
+  const px = (i) => ((n > 1 ? i / (n - 1) : 0.5) * 100).toFixed(2);
+  const py = (v) => (30 - (v / top) * 26).toFixed(2);
+  let line = "", area = "", seg = [];
+  const flush = () => {
+    if (seg.length > 1) {
+      const d = seg.map((p, j) => `${j ? "L" : "M"}${p[0]},${p[1]}`).join("");
+      line += d;
+      area += `${d}L${seg[seg.length - 1][0]},32L${seg[0][0]},32Z`;
+    }
+    seg = [];
+  };
+  // a gap in the readings breaks the line instead of bridging it with a straight run
+  seen.forEach(([i, v], j) => {
+    if (j && i !== seen[j - 1][0] + 1) flush();
+    seg.push([px(i), py(v)]);
+  });
+  flush();
+  lineEl.setAttribute("d", line);
+  areaEl.setAttribute("d", area);
 }
 function setMetric(key, value, unit, sub) {
   $(`mv-${key}`).innerHTML = value == null ? "–" : `${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ""}`;
@@ -256,8 +276,13 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
   spark("sp-power", h.gpu_power, hw.gpu_power_limit);
   const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
+  // AMD has no NVML-style PCIe throughput counter; the engine's own per-request expert swaps are the real numbers
+  const tier = eng.last && (eng.last.ram_blobs || eng.last.file_blobs)
+             ? `last: ${fmt(eng.last.ram_blobs)} RAM + ${fmt(eng.last.file_blobs)} file expert blobs` +
+               (eng.last.file_mb > 0 ? `, ${fmt(eng.last.file_mb, eng.last.file_mb < 10 ? 1 : 0)} MB read from disk` : "")
+             : "";
   setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
-            hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s` +
+            hw.gpu_pcie_rx_mb == null ? tier : `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s` +
             (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""));
   spark("sp-pcie", h.gpu_pcie_rx_mb);
   setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${st.cores ? `${st.cores} cores · ` : ""}${st.threads} threads` : "");

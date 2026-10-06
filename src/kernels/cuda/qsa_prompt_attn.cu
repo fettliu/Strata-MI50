@@ -867,7 +867,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
         // q.k over this wave's 64 dims for two 16-cell tiles, times the cell's K scale for this group
 #pragma unroll
         for (int nt = 0; nt < 2; ++nt) {
-            const long long rr = __shfl(myrow, nt * 16 + col);
+            const long long rr = __shfl(myrow, nt * 16 + col, 32);
             wf8 s = wf8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
             float ksc = 0.0f;
             if (rr >= 0) ksc = __half2float(__ushort_as_half(__ldg(p.k_scale + rr * (HD / KV_Q8_GROUP) + warp)));

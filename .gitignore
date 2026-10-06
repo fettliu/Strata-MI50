@@ -51,3 +51,7 @@ build-vision.bat
 /third_party/*.zip
 
 /.rocm-win/
+
+# mi50 fork scratch: serve stdout capture and the ad-hoc long-prompt request body
+/strata-server.out
+/bigreq.json

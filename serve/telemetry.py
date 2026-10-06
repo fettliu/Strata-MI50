@@ -141,6 +141,7 @@ class _Amd:
     def __init__(self, index=0, sysfs=None):
         self.dev = amd_device_dir(index, sysfs)
         self.hwmon = None
+        self.pci = os.path.realpath(self.dev) if self.dev else None
         if self.dev:
             try:
                 hw = sorted(os.listdir(os.path.join(self.dev, "hwmon")))
@@ -179,6 +180,17 @@ class _Amd:
             out["power"] = p / 1e6 if p is not None else None
             cap = self._int(os.path.join(self.hwmon, "power1_cap"))
             out["power_limit"] = cap / 1e6 if cap is not None else None
+        if self.pci:
+            # the link itself exists in PCI's sysfs; amdgpu has no NVML-style throughput counter,
+            # so the MB/s readings stay None (the card shows Gen/width and no "to GPU" rate)
+            gen_of = {"2.5": 1, "5.0": 2, "8.0": 3, "16.0": 4, "32.0": 5, "64.0": 6}
+            for key, attr in (("pcie_gen", "current_link_speed"), ("pcie_gen_max", "max_link_speed")):
+                try:
+                    with open(os.path.join(self.pci, attr), encoding="utf-8") as f:
+                        out[key] = gen_of.get(f.read().strip().split()[0])
+                except (OSError, IndexError):
+                    out[key] = None
+            out["pcie_width"] = self._int(os.path.join(self.pci, "current_link_width"))
         return out
 
 

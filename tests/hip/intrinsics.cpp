@@ -116,8 +116,8 @@ int main() {
     CHECK(hipGetDevice(&device));
     hipDeviceProp_t properties{};
     CHECK(hipGetDeviceProperties(&properties, device));
-    if (properties.warpSize != kLanes) {
-        std::fprintf(stderr, "expected wave32, got wave%d\n", properties.warpSize);
+    if (properties.warpSize != 32 && properties.warpSize != 64) {
+        std::fprintf(stderr, "expected wave32 (or the gfx906 fork's wave64), got wave%d\n", properties.warpSize);
         return 1;
     }
 

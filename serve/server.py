@@ -1289,7 +1289,10 @@ class Service:
         if state == "reading" and progress:
             live["prompt_read"], live["prompt_total"] = progress
         engine = {"model": self.model, "max_context": self.engine.max_context, "images": self.vision is not None,
-                  **dict(getattr(self.engine, "info", {}) or {})}
+                  **dict(getattr(self.engine, "info", {}) or {}),
+                  # the last DONE line's per-request expert tiers (engine 0.1.31+); the Monitor shows them on the
+                  # PCIe card when the backend has no live transfer counter (that is every AMD card)
+                  "last": dict(getattr(self.engine, "last", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],

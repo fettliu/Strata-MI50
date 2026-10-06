@@ -56,7 +56,9 @@ std::string arch_problem(const cudaDeviceProp& p, int ordinal) {
                "); compile it for this card (./setup.sh --backend hip, or -DCMAKE_HIP_ARCHITECTURES=" + arch +
                ", docs/AMD_HIP.md) or choose another GPU with HIP_VISIBLE_DEVICES";
     }
-    if (p.warpSize != 32) {
+    // The gfx906 fork runs wave64 code objects: the kernels address 32-lane logical warps through explicit
+    // shuffle widths and the ballot half-word fix in hip_compat/intrinsics.hpp.
+    if (p.warpSize != 32 && !(arch == "gfx906" && p.warpSize == 64)) {
         return card + " runs wave" + std::to_string(p.warpSize) + "; Strata's HIP kernels need wave32";
     }
     return "";
