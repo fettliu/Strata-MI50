@@ -1740,7 +1740,7 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
             std::fprintf(stderr, "fused_gr_read_multi: %s\n", cudaGetErrorString(e));
             std::exit(1);
         }
-        return;
+        return false;
     }
 #endif
     // the default read (STRATA_GR_V3 unset): v1, or the bitwise-equal v2 / v3 this card's check accepted

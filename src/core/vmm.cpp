@@ -1,6 +1,6 @@
 #include "strata/core/vmm.hpp"
 
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)   // (gfx906 compat route has no CUDA VMM; use the stub branch)
 #include <cuda.h>
 #include <cuda_runtime.h>
 
