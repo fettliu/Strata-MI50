@@ -210,6 +210,25 @@ inline bool repack_gguf_raw_body_to_sf4(
     return true;
 }
 
+// ---- dtype-dispatch compute capability, decoupled from the forced device report ----
+// strata_hip.h pins prop.major=6 on the gfx906 HIP build so no Tensor-Core path is
+// selected (the CUDA device code was compiled as the sm_60 #else branch and rocBLAS has
+// no BF16 Tensile solution for gfx906). That pin, however, also forces the dense/trunk
+// GEMMs onto the fp32 route (cur_cc < 70) even though gfx906 rocBLAS *does* ship native
+// FP16 Tensile kernels (Type_HH / HH_HPA / HS_HPA). INK_GEMM_CC lets the dtype dispatch
+// pretend a higher cc -- e.g. 72 -- so gemm_bf16_compat / the .attn.* path take the
+// sm_70..79 FP16 route, while ink_cap_int8_tc()/ink_cap_wmma_f16() keep reading the real
+// prop.major=6, leaving the MoE on the compiled-in SIMT codec kernels. Values outside
+// [70,80) are ignored (80+ would hit the bf16 path that segfaults on gfx906). Unset -> no change.
+inline int ink_dispatch_cc(int reported_cc) {
+    static const int override_cc = [] {
+        const char* s = std::getenv("INK_GEMM_CC");
+        const int v = (s && *s) ? std::atoi(s) : 0;
+        return (v >= 70 && v < 80) ? v : 0;
+    }();
+    return override_cc ? override_cc : reported_cc;
+}
+
 // ============================================================================
 // InkCudaModel: GPU-resident .strata v1.1 / .gguf / HF Trunk + Experts (Single-GPU & Dual-GPU EP!)
 // ============================================================================
@@ -311,7 +330,7 @@ struct InkCudaModel {
         {
             cudaDeviceProp prop{};
             INK_CK(cudaGetDeviceProperties(&prop, primary_gpu));
-            sm_cc = prop.major * 10 + prop.minor;
+            sm_cc = ink_dispatch_cc(prop.major * 10 + prop.minor);
         }
         if (!rd.open(strata_path, err)) return false;
         parse_ink_manifest(rd.manifest_json(), man, true);
@@ -893,7 +912,7 @@ struct InkCudaModel {
             INK_CK(ink_cuda_mem_info(&gpu_vf[gi], &gpu_vt[gi], gpus[gi]));
         }
         INK_CK(cudaSetDevice(primary_gpu));
-        sm_cc = gpu_cc[0];
+        sm_cc = ink_dispatch_cc(gpu_cc[0]);
         stage_cc[0] = sm_cc;
         stage_trunk_attn_fp16[0] = (sm_cc >= 70 && sm_cc < 80);
 
@@ -938,7 +957,7 @@ struct InkCudaModel {
             n_stages = (int)gpus.size();
             for (int s = 0; s < n_stages; ++s) {
                 stage_gpu[s] = gpus[s];
-                stage_cc[s] = gpu_cc[s];
+                stage_cc[s] = ink_dispatch_cc(gpu_cc[s]);
                 stage_trunk_attn_fp16[s] = (stage_cc[s] >= 70 && stage_cc[s] < 80);
                 for (int t = 0; t < n_stages; ++t) stage_p2p[s][t] = (s == t);
             }
@@ -1144,7 +1163,7 @@ struct InkCudaModel {
                     stage_gpu[s] = active_stages[s];
                     cudaDeviceProp sp{};
                     INK_CK(cudaGetDeviceProperties(&sp, stage_gpu[s]));
-                    stage_cc[s] = sp.major * 10 + sp.minor;
+                    stage_cc[s] = ink_dispatch_cc(sp.major * 10 + sp.minor);
                     stage_trunk_attn_fp16[s] = (stage_cc[s] >= 70 && stage_cc[s] < 80);
                     stage_l0[s] = cur_l;
                     stage_l1[s] = cur_l + active_counts[s];

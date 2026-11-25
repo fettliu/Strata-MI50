@@ -36,6 +36,7 @@
 #define cudaGraphExec_t hipGraphExec_t
 #define cudaGraphNode_t hipGraphNode_t
 #define cudaDeviceProp hipDeviceProp_t
+#define cudaFuncAttributes hipFuncAttributes
 #define cudaMemcpyKind hipMemcpyKind
 #define cudaMemcpyHostToDevice hipMemcpyHostToDevice
 #define cudaMemcpyDeviceToHost hipMemcpyDeviceToHost
@@ -84,13 +85,33 @@
 #define cudaGetDevice hipGetDevice
 #define cudaSetDevice hipSetDevice
 #define cudaGetDeviceCount hipGetDeviceCount
-#define cudaGetDeviceProperties hipGetDeviceProperties
+// The Inkling CUDA backend dispatches on the runtime compute capability (prop.major * 10 + prop.minor): sm_80+
+// takes the BF16 tensor-core cuBLAS path, sm_70/75 FP16, sm_60/61 FP32.  A gfx906 HIP build has no tensor cores
+// and - crucially - its device code is the sm_60 `#else` branch (__CUDA_ARCH__ is never defined under HIP), so the
+// host side must report sm_60 too or it dispatches to kernels/paths the binary does not contain.  rocBLAS also has
+// no BF16 (BB_HPA) gfx906 Tensile solutions, so an sm_80 report makes the first BF16 gemm segfault inside Tensile.
+// Report 6.0 ("Pascal SIMT") so host dispatch matches the compiled device code.
+inline hipError_t strata_get_device_properties(hipDeviceProp_t* prop, int dev) {
+    hipError_t e = hipGetDeviceProperties(prop, dev);
+    if (e == hipSuccess && prop) {
+        prop->major = 6;
+        prop->minor = 0;
+    }
+    return e;
+}
+#define cudaGetDeviceProperties strata_get_device_properties
+#define cudaFuncGetAttributes hipFuncGetAttributes
 // The shared-memory opt-in limit: some HIP versions report 0 for it on GCN cards; the real ceiling there is
 // the plain per-block limit (64 KB of LDS on gfx906).
 inline hipError_t strata_device_get_attribute(int* v, hipDeviceAttribute_t a, int dev) {
     hipError_t e = hipDeviceGetAttribute(v, a, dev);
     if (e == hipSuccess && a == hipDeviceAttributeSharedMemPerBlockOptin && *v <= 0)
         e = hipDeviceGetAttribute(v, hipDeviceAttributeMaxSharedMemoryPerBlock, dev);
+    // Match strata_get_device_properties(): a gfx906 build presents itself as sm_60 (see the note above).
+    if (e == hipSuccess && v) {
+        if (a == hipDeviceAttributeComputeCapabilityMajor) *v = 6;
+        else if (a == hipDeviceAttributeComputeCapabilityMinor) *v = 0;
+    }
     return e;
 }
 #define cudaDeviceGetAttribute strata_device_get_attribute
@@ -128,7 +149,15 @@ template <typename T> inline hipError_t strata_host_alloc(T** p, size_t bytes, u
 #define cudaFreeHost hipHostFree
 #define cudaHostRegister hipHostRegister
 #define cudaHostUnregister hipHostUnregister
-#define cudaHostGetDevicePointer hipHostGetDevicePointer
+// Typed-pointer form: call sites pass e.g. cudaHostGetDevicePointer(SomeStruct**, host, 0); HIP's C API wants
+// void**, so a template casts.  A plain void** argument still selects the non-template overload.
+template <typename T> inline hipError_t strata_host_get_device_ptr(T** dev, void* host, unsigned int flags) {
+    return hipHostGetDevicePointer(reinterpret_cast<void**>(dev), host, flags);
+}
+inline hipError_t strata_host_get_device_ptr(void** dev, void* host, unsigned int flags) {
+    return hipHostGetDevicePointer(dev, host, flags);
+}
+#define cudaHostGetDevicePointer strata_host_get_device_ptr
 #define cudaStreamCreate hipStreamCreate
 #define cudaStreamCreateWithFlags hipStreamCreateWithFlags
 #define cudaStreamCreateWithPriority hipStreamCreateWithPriority
@@ -230,6 +259,11 @@ static __device__ __forceinline__ void strata_nanosleep(unsigned int ns) {
 }
 #define __nanosleep(ns) strata_nanosleep(ns)
 #define __trap() __builtin_trap()
+
+// __ldcv (CUDA: non-coherent "streaming" load, L1 bypass) has no AMD counterpart with that exact cache policy;
+// a plain dereference is the portable equivalent (element type may be float4, so a template, not a macro).
+template <typename T> static __device__ __forceinline__ T strata_ldcv(const T* p) { return *p; }
+#define __ldcv(p) strata_ldcv(p)
 
 // __dp4a(a, b, c): signed 8-bit dot product plus accumulator; gfx906 has v_dot4_i32_i8.
 static __device__ __forceinline__ int strata_dp4a(int a, int b, int c) {

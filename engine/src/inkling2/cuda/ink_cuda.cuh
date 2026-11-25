@@ -382,7 +382,11 @@ __device__ __forceinline__ float situ_f32(float g, float u) {
 // Hardware dp4a.s32.s32 exists ONLY on sm_61 (Pascal GP102/104/106) and sm_75+ (Turing..Blackwell).
 // On sm_60 (P100) and sm_70 (V100), PTX dp4a is software-emulated; use single-instruction PRMT.S4E + IMAD!
 __device__ __forceinline__ int32_t dp4a_i8(uint32_t a, uint32_t b, int32_t c) {
-#if defined(__CUDA_ARCH__) && ((__CUDA_ARCH__ == 610) || (__CUDA_ARCH__ >= 750))
+#if defined(__HIP_PLATFORM_AMD__)
+    // The gfx906 HIP port: hip_compat maps __dp4a to v_dot4_i32_i8 (gfx906 has it; the CUDA arch macros are
+    // never defined under HIP, so without this branch every dp4a kernel would take the software path below).
+    return __dp4a((int)a, (int)b, c);
+#elif defined(__CUDA_ARCH__) && ((__CUDA_ARCH__ == 610) || (__CUDA_ARCH__ >= 750))
     return __dp4a((int)a, (int)b, c);
 #else
     const int32_t a0 = (int32_t)(int8_t)(a),        b0 = (int32_t)(int8_t)(b);
